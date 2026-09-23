@@ -1,0 +1,68 @@
+name: Underwater Grading Failure Report
+description: Report a repeatable or serious grading failure.
+title: "[Failure] "
+labels:
+  - failure
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Use this form for serious or repeatable failures.
+
+  - type: input
+    id: scene
+    attributes:
+      label: Scene
+      placeholder: Deep water + fish school / underwater person / reef...
+    validations:
+      required: true
+
+  - type: dropdown
+    id: severity
+    attributes:
+      label: Severity
+      options:
+        - Critical
+        - Major
+        - Minor
+    validations:
+      required: true
+
+  - type: textarea
+    id: failure
+    attributes:
+      label: Failure Description
+      placeholder: Describe exactly what went wrong.
+    validations:
+      required: true
+
+  - type: textarea
+    id: repeat
+    attributes:
+      label: Is this repeatable?
+      description: Describe whether the same problem appeared in multiple images.
+      placeholder: Happened in 4 of 6 deep-water fish-school images.
+    validations:
+      required: false
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected Behavior
+      placeholder: Fish direction and count should remain unchanged.
+    validations:
+      required: true
+
+  - type: textarea
+    id: media
+    attributes:
+      label: Before / After Evidence
+      placeholder: Drag images here or paste links.
+
+  - type: checkboxes
+    id: permission
+    attributes:
+      label: Permission
+      options:
+        - label: I allow this case to be used for rule improvement.
+          required: true
