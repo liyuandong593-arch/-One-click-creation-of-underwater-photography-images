@@ -15,7 +15,7 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Classify underwater feedback
+      - name: Classify feedback
         uses: actions/github-script@v7
         with:
           script: |
@@ -23,12 +23,22 @@ jobs:
             const title = issue.title || "";
             const body = issue.body || "";
 
-            // --------------------------------------------------
+            // ==================================================
             // Helpers
-            // --------------------------------------------------
+            // ==================================================
+
+            function normalize(text) {
+              return (text || "")
+                .toLowerCase()
+                .replace(/\r/g, "")
+                .trim();
+            }
 
             function extractSection(body, heading) {
-              const escaped = heading.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+              const escaped = heading.replace(
+                /[.*+?^${}()|[\]\\]/g,
+                "\\$&"
+              );
 
               const regex = new RegExp(
                 `###\\s+${escaped}\\s*\\n([\\s\\S]*?)(?=\\n###\\s+|$)`,
@@ -44,44 +54,84 @@ jobs:
                 .trim();
             }
 
-            function normalize(text) {
-              return (text || "")
-                .toLowerCase()
-                .replace(/\r/g, "")
-                .trim();
-            }
-
             function getCheckedItems(section) {
               return section
                 .split("\n")
-                .filter(line => /^\s*-\s*\[[xX]\]/.test(line))
+                .filter(line =>
+                  /^\s*-\s*\[[xX]\]/.test(line)
+                )
                 .map(line =>
                   line
-                    .replace(/^\s*-\s*\[[xX]\]\s*/, "")
+                    .replace(
+                      /^\s*-\s*\[[xX]\]\s*/,
+                      ""
+                    )
                     .trim()
                 );
             }
 
-            const labels = new Set();
+            function includesAny(text, keywords) {
+              const normalized = normalize(text);
 
-            // --------------------------------------------------
-            // Extract structured fields
-            // --------------------------------------------------
+              return keywords.some(keyword =>
+                normalized.includes(
+                  normalize(keyword)
+                )
+              );
+            }
 
-            const scene = normalize(
-              extractSection(body, "Scene Type")
+            const autoLabels = new Set();
+
+            // ==================================================
+            // Determine issue type
+            // ==================================================
+
+            const isFeedback =
+              title.startsWith("[Feedback]");
+
+            const isFailure =
+              title.startsWith("[Failure]");
+
+            if (!isFeedback && !isFailure) {
+              console.log(
+                "Not an Underwater Colorist feedback issue."
+              );
+              return;
+            }
+
+            autoLabels.add("learning-candidate");
+
+            if (isFeedback) {
+              autoLabels.add("feedback");
+            }
+
+            if (isFailure) {
+              autoLabels.add("failure");
+            }
+
+            // ==================================================
+            // Extract structured data
+            // ==================================================
+
+            // Feedback template
+            const feedbackScene = extractSection(
+              body,
+              "Scene Type"
             );
 
-            const mode = normalize(
-              extractSection(body, "Grading Mode")
+            const gradingMode = extractSection(
+              body,
+              "Grading Mode"
             );
 
-            const worked = normalize(
-              extractSection(body, "What worked well?")
+            const workedWell = extractSection(
+              body,
+              "What worked well?"
             );
 
-            const failed = normalize(
-              extractSection(body, "What failed?")
+            const feedbackFailure = extractSection(
+              body,
+              "What failed?"
             );
 
             const problemsSection = extractSection(
@@ -89,267 +139,490 @@ jobs:
               "Problems observed"
             );
 
-            const checkedProblems = getCheckedItems(
-              problemsSection
-            ).map(normalize);
+            // Failure report template
+            const failureScene = extractSection(
+              body,
+              "Scene"
+            );
 
-            // --------------------------------------------------
-            // Main issue type
-            // --------------------------------------------------
+            const failureDescription =
+              extractSection(
+                body,
+                "Failure Description"
+              );
 
-            if (title.startsWith("[Feedback]")) {
-              labels.add("feedback");
-              labels.add("learning-candidate");
-            }
+            const severity = extractSection(
+              body,
+              "Severity"
+            );
 
-            if (title.startsWith("[Failure]")) {
-              labels.add("failure");
-              labels.add("learning-candidate");
-            }
+            const repeatability = extractSection(
+              body,
+              "Is this repeatable?"
+            );
 
-            // --------------------------------------------------
+            // Prefer structured scene field
+            const scene = normalize(
+              feedbackScene || failureScene
+            );
+
+            const failureText = normalize(
+              feedbackFailure ||
+              failureDescription
+            );
+
+            const mode = normalize(
+              gradingMode
+            );
+
+            const checkedProblems =
+              getCheckedItems(
+                problemsSection
+              ).map(normalize);
+
+            const problemSet =
+              new Set(checkedProblems);
+
+            // ==================================================
             // Mode classification
-            // --------------------------------------------------
+            // ==================================================
 
             if (mode === "hero") {
-              labels.add("mode-hero");
+              autoLabels.add("mode-hero");
             }
 
             if (mode === "natural") {
-              labels.add("mode-natural");
+              autoLabels.add("mode-natural");
             }
 
-            // --------------------------------------------------
+            // ==================================================
             // Scene classification
-            // Only use the actual selected Scene Type field
-            // --------------------------------------------------
+            // ==================================================
 
-            if (scene.includes("person + fish school")) {
-              labels.add("scene-person");
-              labels.add("scene-fish");
+            if (
+              includesAny(scene, [
+                "person + fish school",
+                "人物 + 鱼群",
+                "人+鱼群"
+              ])
+            ) {
+              autoLabels.add("scene-person");
+              autoLabels.add("scene-fish");
             }
 
             else if (
-              scene.includes("person + large marine animal")
+              includesAny(scene, [
+                "person + large marine animal",
+                "大型海洋生物",
+                "鲸鲨",
+                "鲨鱼",
+                "海龟",
+                "manta",
+                "whale shark"
+              ])
             ) {
-              labels.add("scene-person");
-              labels.add("scene-marine-animal");
+              autoLabels.add("scene-person");
+              autoLabels.add(
+                "scene-marine-animal"
+              );
             }
 
             else if (
-              scene.includes("underwater person")
+              includesAny(scene, [
+                "underwater person",
+                "水下人物",
+                "人物"
+              ])
             ) {
-              labels.add("scene-person");
+              autoLabels.add("scene-person");
             }
 
             else if (
-              scene.includes("coral") ||
-              scene.includes("reef")
+              includesAny(scene, [
+                "coral",
+                "reef",
+                "珊瑚",
+                "礁"
+              ])
             ) {
-              labels.add("scene-coral");
+              autoLabels.add("scene-coral");
             }
 
             else if (
-              scene.includes("wreck") ||
-              scene.includes("structure")
+              includesAny(scene, [
+                "wreck",
+                "structure",
+                "沉船",
+                "结构"
+              ])
             ) {
-              labels.add("scene-structure");
+              autoLabels.add("scene-structure");
             }
 
             else if (
-              scene.includes("underwater environment")
+              includesAny(scene, [
+                "underwater environment",
+                "environment",
+                "纯环境",
+                "水下环境"
+              ])
             ) {
-              labels.add("scene-environment");
+              autoLabels.add(
+                "scene-environment"
+              );
             }
 
-            // --------------------------------------------------
+            // Extra scene signals for free-text
+            if (
+              includesAny(scene, [
+                "deep water",
+                "deep-water",
+                "深水"
+              ])
+            ) {
+              autoLabels.add(
+                "scene-deep-water"
+              );
+            }
+
+            if (
+              includesAny(scene, [
+                "artificial light",
+                "人工光",
+                "潜水灯"
+              ])
+            ) {
+              autoLabels.add(
+                "scene-artificial-light"
+              );
+            }
+
+            // ==================================================
             // Failure classification
-            // Only use checked problems + actual failure text
-            // --------------------------------------------------
-
-            const failureText = failed;
-
-            const problemSet = new Set(checkedProblems);
+            // ==================================================
 
             // Water
             if (
-              problemSet.has("water too blue / cyan / green") ||
-              problemSet.has("water still hazy") ||
-              failureText.includes("water was too blue") ||
-              failureText.includes("water too blue") ||
-              failureText.includes("water too cyan") ||
-              failureText.includes("water too green") ||
-              failureText.includes("water still hazy") ||
-              failureText.includes("海水太蓝") ||
-              failureText.includes("水体太蓝") ||
-              failureText.includes("水体浑浊")
+              problemSet.has(
+                "water too blue / cyan / green"
+              ) ||
+              problemSet.has(
+                "water still hazy"
+              ) ||
+              includesAny(
+                failureText,
+                [
+                  "water too blue",
+                  "water was too blue",
+                  "too cyan",
+                  "too green",
+                  "water still hazy",
+                  "海水太蓝",
+                  "水体太蓝",
+                  "偏蓝",
+                  "偏青",
+                  "偏绿",
+                  "水体浑浊",
+                  "海水浑浊"
+                ]
+              )
             ) {
-              labels.add("failure-water");
+              autoLabels.add("failure-water");
             }
 
-            // Person / anatomy / skin
+            // Person
             if (
-              problemSet.has("skin tone incorrect") ||
-              problemSet.has("face changed") ||
-              problemSet.has("hands / fingers changed") ||
-              failureText.includes("skin tone") ||
-              failureText.includes("face changed") ||
-              failureText.includes("hands") ||
-              failureText.includes("fingers") ||
-              failureText.includes("肤色") ||
-              failureText.includes("脸变") ||
-              failureText.includes("手指")
+              problemSet.has(
+                "skin tone incorrect"
+              ) ||
+              problemSet.has(
+                "face changed"
+              ) ||
+              problemSet.has(
+                "hands / fingers changed"
+              ) ||
+              includesAny(
+                failureText,
+                [
+                  "skin tone",
+                  "face changed",
+                  "hands changed",
+                  "fingers changed",
+                  "肤色",
+                  "脸变",
+                  "人脸变",
+                  "手指",
+                  "手变形"
+                ]
+              )
             ) {
-              labels.add("failure-person");
+              autoLabels.add("failure-person");
             }
 
             // Fish
             if (
-              problemSet.has("fish distorted") ||
-              problemSet.has("fish count changed") ||
-              problemSet.has("fish direction changed") ||
-              failureText.includes("fish became distorted") ||
-              failureText.includes("fish distorted") ||
-              failureText.includes("fish count") ||
-              failureText.includes("fish direction") ||
-              failureText.includes("鱼变形") ||
-              failureText.includes("鱼群变形") ||
-              failureText.includes("鱼数量") ||
-              failureText.includes("鱼方向")
+              problemSet.has(
+                "fish distorted"
+              ) ||
+              problemSet.has(
+                "fish count changed"
+              ) ||
+              problemSet.has(
+                "fish direction changed"
+              ) ||
+              includesAny(
+                failureText,
+                [
+                  "fish distorted",
+                  "fish became distorted",
+                  "fish count",
+                  "fish direction",
+                  "鱼变形",
+                  "鱼群变形",
+                  "鱼扭曲",
+                  "鱼数量",
+                  "鱼的数量",
+                  "鱼方向",
+                  "鱼的方向"
+                ]
+              )
             ) {
-              labels.add("failure-fish");
+              autoLabels.add("failure-fish");
             }
 
             // Coral
             if (
-              problemSet.has("coral color unrealistic") ||
-              failureText.includes("coral color") ||
-              failureText.includes("reef color") ||
-              failureText.includes("珊瑚颜色")
+              problemSet.has(
+                "coral color unrealistic"
+              ) ||
+              includesAny(
+                failureText,
+                [
+                  "coral color",
+                  "reef color",
+                  "珊瑚颜色",
+                  "珊瑚偏黄",
+                  "珊瑚偏橙"
+                ]
+              )
             ) {
-              labels.add("failure-coral");
+              autoLabels.add("failure-coral");
             }
 
             // Lighting
             if (
-              problemSet.has("artificial light looks fake") ||
-              failureText.includes("artificial light") ||
-              failureText.includes("fake light") ||
-              failureText.includes("light direction changed") ||
-              failureText.includes("光源太假") ||
-              failureText.includes("光线方向")
+              problemSet.has(
+                "artificial light looks fake"
+              ) ||
+              includesAny(
+                failureText,
+                [
+                  "artificial light",
+                  "fake light",
+                  "light direction changed",
+                  "光源太假",
+                  "假光",
+                  "光线方向",
+                  "光源方向"
+                ]
+              )
             ) {
-              labels.add("failure-light");
+              autoLabels.add("failure-light");
             }
 
-            // Composition / content preservation
+            // Content preservation
             if (
-              problemSet.has("composition changed") ||
-              problemSet.has("new objects appeared") ||
-              failureText.includes("composition changed") ||
-              failureText.includes("new object") ||
-              failureText.includes("构图改变") ||
-              failureText.includes("新增物体")
+              problemSet.has(
+                "composition changed"
+              ) ||
+              problemSet.has(
+                "new objects appeared"
+              ) ||
+              includesAny(
+                failureText,
+                [
+                  "composition changed",
+                  "new object",
+                  "object disappeared",
+                  "构图改变",
+                  "构图变化",
+                  "新增物体",
+                  "新增鱼",
+                  "物体消失"
+                ]
+              )
             ) {
-              labels.add("failure-content");
+              autoLabels.add(
+                "failure-content"
+              );
             }
 
             // Overprocessing
             if (
-              problemSet.has("image looks overprocessed") ||
-              failureText.includes("overprocessed") ||
-              failureText.includes("over-processed") ||
-              failureText.includes("过度处理") ||
-              failureText.includes("ai-looking") ||
-              failureText.includes("ai感")
+              problemSet.has(
+                "image looks overprocessed"
+              ) ||
+              includesAny(
+                failureText,
+                [
+                  "overprocessed",
+                  "over-processed",
+                  "ai-looking",
+                  "过度处理",
+                  "ai感",
+                  "太假"
+                ]
+              )
             ) {
-              labels.add("failure-overprocessing");
+              autoLabels.add(
+                "failure-overprocessing"
+              );
             }
 
-            // --------------------------------------------------
-            // Positive learning signal
-            // --------------------------------------------------
+            // ==================================================
+            // Success signal
+            // ==================================================
 
-            if (worked.length >= 10) {
-              labels.add("success-signal");
+            if (
+              normalize(workedWell).length >= 5
+            ) {
+              autoLabels.add("success-signal");
             }
 
-            // --------------------------------------------------
-            // Managed labels
-            // Remove stale auto-generated classification labels
-            // before applying the current correct set.
-            // --------------------------------------------------
+            // ==================================================
+            // Severity
+            // ==================================================
 
-            const managedPrefixes = [
+            if (
+              normalize(severity) === "critical"
+            ) {
+              autoLabels.add(
+                "severity-critical"
+              );
+            }
+
+            if (
+              normalize(severity) === "major"
+            ) {
+              autoLabels.add(
+                "severity-major"
+              );
+            }
+
+            if (
+              normalize(severity) === "minor"
+            ) {
+              autoLabels.add(
+                "severity-minor"
+              );
+            }
+
+            // ==================================================
+            // Repeatability
+            // ==================================================
+
+            if (
+              includesAny(
+                repeatability,
+                [
+                  "multiple",
+                  "repeat",
+                  "多张",
+                  "重复",
+                  "多次",
+                  "again"
+                ]
+              )
+            ) {
+              autoLabels.add(
+                "repeatable-signal"
+              );
+            }
+
+            // ==================================================
+            // Managed label rules
+            // ==================================================
+
+            const managedExact = new Set([
               "feedback",
               "failure",
               "learning-candidate",
               "success-signal",
+              "repeatable-signal"
+            ]);
+
+            const managedPrefixes = [
               "mode-",
               "scene-",
-              "failure-"
+              "failure-",
+              "severity-"
             ];
 
-            const currentLabels =
-              issue.labels?.map(label =>
-                typeof label === "string"
-                  ? label
-                  : label.name
-              ) || [];
-
             function isManagedLabel(name) {
-              return managedPrefixes.some(prefix =>
-                prefix.endsWith("-")
-                  ? name.startsWith(prefix)
-                  : name === prefix
+              if (managedExact.has(name)) {
+                return true;
+              }
+
+              return managedPrefixes.some(
+                prefix =>
+                  name.startsWith(prefix)
               );
             }
 
-            for (const currentLabel of currentLabels) {
+            // ==================================================
+            // Preserve manually added labels
+            // ==================================================
+
+            const currentLabels =
+              (issue.labels || [])
+                .map(label =>
+                  typeof label === "string"
+                    ? label
+                    : label.name
+                );
+
+            const manualLabels =
+              currentLabels.filter(
+                label =>
+                  !isManagedLabel(label)
+              );
+
+            // ==================================================
+            // Ensure required auto labels exist
+            // ==================================================
+
+            const autoLabelNames =
+              [...autoLabels];
+
+            const existingLabels =
+              await github.paginate(
+                github.rest.issues.listLabelsForRepo,
+                {
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  per_page: 100
+                }
+              );
+
+            const existingNames =
+              new Set(
+                existingLabels.map(
+                  label => label.name
+                )
+              );
+
+            for (
+              const label of autoLabelNames
+            ) {
               if (
-                isManagedLabel(currentLabel) &&
-                !labels.has(currentLabel)
+                !existingNames.has(label)
               ) {
                 try {
-                  await github.rest.issues.removeLabel({
-                    owner: context.repo.owner,
-                    repo: context.repo.repo,
-                    issue_number: issue.number,
-                    name: currentLabel
-                  });
-                } catch (error) {
-                  console.log(
-                    `Could not remove label ${currentLabel}: ${error.message}`
-                  );
-                }
-              }
-            }
-
-            // --------------------------------------------------
-            // Ensure labels exist
-            // --------------------------------------------------
-
-            const labelNames = [...labels];
-
-            const existingLabels = await github.paginate(
-              github.rest.issues.listLabelsForRepo,
-              {
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                per_page: 100
-              }
-            );
-
-            const existingNames = new Set(
-              existingLabels.map(label => label.name)
-            );
-
-            for (const label of labelNames) {
-              if (!existingNames.has(label)) {
-                try {
                   await github.rest.issues.createLabel({
-                    owner: context.repo.owner,
-                    repo: context.repo.repo,
+                    owner:
+                      context.repo.owner,
+                    repo:
+                      context.repo.repo,
                     name: label,
                     color: "DDEEFF",
                     description:
@@ -363,73 +636,151 @@ jobs:
               }
             }
 
-            // --------------------------------------------------
-            // Apply labels
-            // --------------------------------------------------
+            // ==================================================
+            // Replace managed labels in one operation
+            // Preserve manual labels
+            // ==================================================
 
-            if (labelNames.length > 0) {
-              await github.rest.issues.addLabels({
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                issue_number: issue.number,
-                labels: labelNames
-              });
-            }
+            const finalLabels = [
+              ...new Set([
+                ...manualLabels,
+                ...autoLabelNames
+              ])
+            ];
 
-            // --------------------------------------------------
-            // Bot comment
-            // --------------------------------------------------
+            await github.rest.issues.setLabels({
+              owner:
+                context.repo.owner,
+              repo:
+                context.repo.repo,
+              issue_number:
+                issue.number,
+              labels:
+                finalLabels
+            });
+
+            // ==================================================
+            // Learning bot comment
+            // ==================================================
 
             const marker =
               "<!-- underwater-learning-intake -->";
 
             const comments =
-              await github.rest.issues.listComments({
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                issue_number: issue.number,
-                per_page: 100
-              });
-
-            const alreadyCommented =
-              comments.data.some(
-                comment =>
-                  comment.body &&
-                  comment.body.includes(marker)
+              await github.paginate(
+                github.rest.issues.listComments,
+                {
+                  owner:
+                    context.repo.owner,
+                  repo:
+                    context.repo.repo,
+                  issue_number:
+                    issue.number,
+                  per_page: 100
+                }
               );
 
-            if (!alreadyCommented) {
-              await github.rest.issues.createComment({
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                issue_number: issue.number,
-                body: `${marker}
+            const existingBotComment =
+              comments.find(
+                comment =>
+                  comment.body &&
+                  comment.body.includes(
+                    marker
+                  )
+              );
+
+            const commentBody = `${marker}
             ## Underwater Colorist Learning Intake
 
-            This case has entered the learning pipeline.
+            This case is part of the learning pipeline.
 
-            **Detected classification**
+            ### Current classification
 
-            ${labelNames.map(label => `- \`${label}\``).join("\n")}
+            ${autoLabelNames
+              .sort()
+              .map(
+                label =>
+                  `- \`${label}\``
+              )
+              .join("\n")}
 
-            This feedback may contribute to:
+            ### Learning policy
+
+            This case may contribute to:
 
             - Successful-rule candidates
             - Failure-rule candidates
             - Rule-revision candidates
 
-            Candidate findings will not automatically modify the production Skill.
+            Feedback does **not** directly modify the production Skill.
 
-            Repeated evidence and human review are required before promotion into the official rule library.`
+            Repeated evidence and human review are required before a candidate rule is promoted into the official rule library.
+            `;
+
+            if (existingBotComment) {
+              await github.rest.issues.updateComment({
+                owner:
+                  context.repo.owner,
+                repo:
+                  context.repo.repo,
+                comment_id:
+                  existingBotComment.id,
+                body:
+                  commentBody
+              });
+            } else {
+              await github.rest.issues.createComment({
+                owner:
+                  context.repo.owner,
+                repo:
+                  context.repo.repo,
+                issue_number:
+                  issue.number,
+                body:
+                  commentBody
               });
             }
 
-            // --------------------------------------------------
-            // Debug output
-            // --------------------------------------------------
+            // ==================================================
+            // Debug
+            // ==================================================
 
-            console.log("Scene:", scene);
-            console.log("Mode:", mode);
-            console.log("Checked problems:", checkedProblems);
-            console.log("Failure text:", failed);
-            console.log("Applied labels:", labelNames);
+            console.log(
+              "Issue:",
+              issue.number
+            );
+
+            console.log(
+              "Scene:",
+              scene
+            );
+
+            console.log(
+              "Mode:",
+              mode
+            );
+
+            console.log(
+              "Checked problems:",
+              checkedProblems
+            );
+
+            console.log(
+              "Failure text:",
+              failureText
+            );
+
+            console.log(
+              "Manual labels preserved:",
+              manualLabels
+            );
+
+            console.log(
+              "Final auto labels:",
+              autoLabelNames
+            );
+
+            console.log(
+              "Final labels:",
+              finalLabels
+            );
