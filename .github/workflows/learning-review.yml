@@ -15,18 +15,88 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Classify new feedback
+      - name: Classify underwater feedback
         uses: actions/github-script@v7
         with:
           script: |
             const issue = context.payload.issue;
             const title = issue.title || "";
             const body = issue.body || "";
-            const text = `${title}\n${body}`.toLowerCase();
+
+            // --------------------------------------------------
+            // Helpers
+            // --------------------------------------------------
+
+            function extractSection(body, heading) {
+              const escaped = heading.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
+              const regex = new RegExp(
+                `###\\s+${escaped}\\s*\\n([\\s\\S]*?)(?=\\n###\\s+|$)`,
+                "i"
+              );
+
+              const match = body.match(regex);
+
+              if (!match) return "";
+
+              return match[1]
+                .replace(/_No response_/gi, "")
+                .trim();
+            }
+
+            function normalize(text) {
+              return (text || "")
+                .toLowerCase()
+                .replace(/\r/g, "")
+                .trim();
+            }
+
+            function getCheckedItems(section) {
+              return section
+                .split("\n")
+                .filter(line => /^\s*-\s*\[[xX]\]/.test(line))
+                .map(line =>
+                  line
+                    .replace(/^\s*-\s*\[[xX]\]\s*/, "")
+                    .trim()
+                );
+            }
 
             const labels = new Set();
 
-            // Main feedback type
+            // --------------------------------------------------
+            // Extract structured fields
+            // --------------------------------------------------
+
+            const scene = normalize(
+              extractSection(body, "Scene Type")
+            );
+
+            const mode = normalize(
+              extractSection(body, "Grading Mode")
+            );
+
+            const worked = normalize(
+              extractSection(body, "What worked well?")
+            );
+
+            const failed = normalize(
+              extractSection(body, "What failed?")
+            );
+
+            const problemsSection = extractSection(
+              body,
+              "Problems observed"
+            );
+
+            const checkedProblems = getCheckedItems(
+              problemsSection
+            ).map(normalize);
+
+            // --------------------------------------------------
+            // Main issue type
+            // --------------------------------------------------
+
             if (title.startsWith("[Feedback]")) {
               labels.add("feedback");
               labels.add("learning-candidate");
@@ -37,103 +107,231 @@ jobs:
               labels.add("learning-candidate");
             }
 
-            // Mode
-            if (text.includes("hero")) {
+            // --------------------------------------------------
+            // Mode classification
+            // --------------------------------------------------
+
+            if (mode === "hero") {
               labels.add("mode-hero");
             }
 
-            if (text.includes("natural")) {
+            if (mode === "natural") {
               labels.add("mode-natural");
             }
 
+            // --------------------------------------------------
             // Scene classification
-            if (
-              text.includes("fish") ||
-              text.includes("鱼")
-            ) {
+            // Only use the actual selected Scene Type field
+            // --------------------------------------------------
+
+            if (scene.includes("person + fish school")) {
+              labels.add("scene-person");
               labels.add("scene-fish");
             }
 
-            if (
-              text.includes("coral") ||
-              text.includes("reef") ||
-              text.includes("珊瑚")
+            else if (
+              scene.includes("person + large marine animal")
             ) {
-              labels.add("scene-coral");
+              labels.add("scene-person");
+              labels.add("scene-marine-animal");
             }
 
-            if (
-              text.includes("person") ||
-              text.includes("skin") ||
-              text.includes("face") ||
-              text.includes("人物") ||
-              text.includes("肤色") ||
-              text.includes("脸")
+            else if (
+              scene.includes("underwater person")
             ) {
               labels.add("scene-person");
             }
 
-            if (
-              text.includes("deep water") ||
-              text.includes("deep-water") ||
-              text.includes("深水")
+            else if (
+              scene.includes("coral") ||
+              scene.includes("reef")
             ) {
-              labels.add("scene-deep-water");
+              labels.add("scene-coral");
             }
 
-            if (
-              text.includes("artificial light") ||
-              text.includes("人工光")
+            else if (
+              scene.includes("wreck") ||
+              scene.includes("structure")
             ) {
-              labels.add("scene-artificial-light");
+              labels.add("scene-structure");
             }
 
+            else if (
+              scene.includes("underwater environment")
+            ) {
+              labels.add("scene-environment");
+            }
+
+            // --------------------------------------------------
             // Failure classification
+            // Only use checked problems + actual failure text
+            // --------------------------------------------------
+
+            const failureText = failed;
+
+            const problemSet = new Set(checkedProblems);
+
+            // Water
             if (
-              text.includes("too blue") ||
-              text.includes("cyan") ||
-              text.includes("green") ||
-              text.includes("hazy") ||
-              text.includes("海水") ||
-              text.includes("水体")
+              problemSet.has("water too blue / cyan / green") ||
+              problemSet.has("water still hazy") ||
+              failureText.includes("water was too blue") ||
+              failureText.includes("water too blue") ||
+              failureText.includes("water too cyan") ||
+              failureText.includes("water too green") ||
+              failureText.includes("water still hazy") ||
+              failureText.includes("海水太蓝") ||
+              failureText.includes("水体太蓝") ||
+              failureText.includes("水体浑浊")
             ) {
               labels.add("failure-water");
             }
 
+            // Person / anatomy / skin
             if (
-              text.includes("skin") ||
-              text.includes("face changed") ||
-              text.includes("hands") ||
-              text.includes("fingers") ||
-              text.includes("肤色") ||
-              text.includes("手指")
+              problemSet.has("skin tone incorrect") ||
+              problemSet.has("face changed") ||
+              problemSet.has("hands / fingers changed") ||
+              failureText.includes("skin tone") ||
+              failureText.includes("face changed") ||
+              failureText.includes("hands") ||
+              failureText.includes("fingers") ||
+              failureText.includes("肤色") ||
+              failureText.includes("脸变") ||
+              failureText.includes("手指")
             ) {
               labels.add("failure-person");
             }
 
+            // Fish
             if (
-              text.includes("fish distorted") ||
-              text.includes("fish count") ||
-              text.includes("fish direction") ||
-              text.includes("鱼群") ||
-              text.includes("鱼变形")
+              problemSet.has("fish distorted") ||
+              problemSet.has("fish count changed") ||
+              problemSet.has("fish direction changed") ||
+              failureText.includes("fish became distorted") ||
+              failureText.includes("fish distorted") ||
+              failureText.includes("fish count") ||
+              failureText.includes("fish direction") ||
+              failureText.includes("鱼变形") ||
+              failureText.includes("鱼群变形") ||
+              failureText.includes("鱼数量") ||
+              failureText.includes("鱼方向")
             ) {
               labels.add("failure-fish");
             }
 
+            // Coral
             if (
-              text.includes("fake") ||
-              text.includes("light direction") ||
-              text.includes("光源") ||
-              text.includes("光线")
+              problemSet.has("coral color unrealistic") ||
+              failureText.includes("coral color") ||
+              failureText.includes("reef color") ||
+              failureText.includes("珊瑚颜色")
+            ) {
+              labels.add("failure-coral");
+            }
+
+            // Lighting
+            if (
+              problemSet.has("artificial light looks fake") ||
+              failureText.includes("artificial light") ||
+              failureText.includes("fake light") ||
+              failureText.includes("light direction changed") ||
+              failureText.includes("光源太假") ||
+              failureText.includes("光线方向")
             ) {
               labels.add("failure-light");
             }
 
+            // Composition / content preservation
+            if (
+              problemSet.has("composition changed") ||
+              problemSet.has("new objects appeared") ||
+              failureText.includes("composition changed") ||
+              failureText.includes("new object") ||
+              failureText.includes("构图改变") ||
+              failureText.includes("新增物体")
+            ) {
+              labels.add("failure-content");
+            }
+
+            // Overprocessing
+            if (
+              problemSet.has("image looks overprocessed") ||
+              failureText.includes("overprocessed") ||
+              failureText.includes("over-processed") ||
+              failureText.includes("过度处理") ||
+              failureText.includes("ai-looking") ||
+              failureText.includes("ai感")
+            ) {
+              labels.add("failure-overprocessing");
+            }
+
+            // --------------------------------------------------
+            // Positive learning signal
+            // --------------------------------------------------
+
+            if (worked.length >= 10) {
+              labels.add("success-signal");
+            }
+
+            // --------------------------------------------------
+            // Managed labels
+            // Remove stale auto-generated classification labels
+            // before applying the current correct set.
+            // --------------------------------------------------
+
+            const managedPrefixes = [
+              "feedback",
+              "failure",
+              "learning-candidate",
+              "success-signal",
+              "mode-",
+              "scene-",
+              "failure-"
+            ];
+
+            const currentLabels =
+              issue.labels?.map(label =>
+                typeof label === "string"
+                  ? label
+                  : label.name
+              ) || [];
+
+            function isManagedLabel(name) {
+              return managedPrefixes.some(prefix =>
+                prefix.endsWith("-")
+                  ? name.startsWith(prefix)
+                  : name === prefix
+              );
+            }
+
+            for (const currentLabel of currentLabels) {
+              if (
+                isManagedLabel(currentLabel) &&
+                !labels.has(currentLabel)
+              ) {
+                try {
+                  await github.rest.issues.removeLabel({
+                    owner: context.repo.owner,
+                    repo: context.repo.repo,
+                    issue_number: issue.number,
+                    name: currentLabel
+                  });
+                } catch (error) {
+                  console.log(
+                    `Could not remove label ${currentLabel}: ${error.message}`
+                  );
+                }
+              }
+            }
+
+            // --------------------------------------------------
+            // Ensure labels exist
+            // --------------------------------------------------
+
             const labelNames = [...labels];
 
-            // Automatically create labels if they do not exist
-            const existing = await github.paginate(
+            const existingLabels = await github.paginate(
               github.rest.issues.listLabelsForRepo,
               {
                 owner: context.repo.owner,
@@ -143,7 +341,7 @@ jobs:
             );
 
             const existingNames = new Set(
-              existing.map(label => label.name)
+              existingLabels.map(label => label.name)
             );
 
             for (const label of labelNames) {
@@ -154,15 +352,21 @@ jobs:
                     repo: context.repo.repo,
                     name: label,
                     color: "DDEEFF",
-                    description: "Automatically generated by Underwater Colorist learning workflow"
+                    description:
+                      "Automatically generated by Underwater Colorist learning workflow"
                   });
                 } catch (error) {
-                  console.log(`Could not create label ${label}: ${error.message}`);
+                  console.log(
+                    `Could not create label ${label}: ${error.message}`
+                  );
                 }
               }
             }
 
-            // Add labels
+            // --------------------------------------------------
+            // Apply labels
+            // --------------------------------------------------
+
             if (labelNames.length > 0) {
               await github.rest.issues.addLabels({
                 owner: context.repo.owner,
@@ -172,18 +376,27 @@ jobs:
               });
             }
 
-            // Add learning-system comment
-            const marker = "<!-- underwater-learning-intake -->";
+            // --------------------------------------------------
+            // Bot comment
+            // --------------------------------------------------
 
-            const comments = await github.rest.issues.listComments({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              issue_number: issue.number
-            });
+            const marker =
+              "<!-- underwater-learning-intake -->";
 
-            const alreadyCommented = comments.data.some(
-              comment => comment.body && comment.body.includes(marker)
-            );
+            const comments =
+              await github.rest.issues.listComments({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: issue.number,
+                per_page: 100
+              });
+
+            const alreadyCommented =
+              comments.data.some(
+                comment =>
+                  comment.body &&
+                  comment.body.includes(marker)
+              );
 
             if (!alreadyCommented) {
               await github.rest.issues.createComment({
@@ -193,16 +406,30 @@ jobs:
                 body: `${marker}
             ## Underwater Colorist Learning Intake
 
-            This case has been added to the learning pipeline.
+            This case has entered the learning pipeline.
 
-            It will be evaluated as one or more of:
+            **Detected classification**
 
-            - Successful-rule candidate
-            - Failure-rule candidate
-            - Rule-revision candidate
+            ${labelNames.map(label => `- \`${label}\``).join("\n")}
 
-            Candidate findings are not automatically promoted into production rules.
+            This feedback may contribute to:
 
-            Repeated evidence and human review are required before updating the official Skill rule library.`
+            - Successful-rule candidates
+            - Failure-rule candidates
+            - Rule-revision candidates
+
+            Candidate findings will not automatically modify the production Skill.
+
+            Repeated evidence and human review are required before promotion into the official rule library.`
               });
             }
+
+            // --------------------------------------------------
+            // Debug output
+            // --------------------------------------------------
+
+            console.log("Scene:", scene);
+            console.log("Mode:", mode);
+            console.log("Checked problems:", checkedProblems);
+            console.log("Failure text:", failed);
+            console.log("Applied labels:", labelNames);
